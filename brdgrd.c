@@ -101,6 +101,22 @@ static void print( const char *fmt, ... ) {
 }
 
 
+/* malloc() wrapper which prints an error message and exits if malloc()
+ * returns NULL.
+ */
+void *xmalloc( size_t size ) {
+
+	void *mem = malloc(size);
+
+	if (mem == NULL) {
+		VRB("Exiting because malloc() returned NULL.\n");
+		exit(1);
+	}
+
+	return mem;
+}
+
+
 /* Log the given hash table entry to the logfile.
  */
 void log_connection( hash_key_t *key, hash_val_t *conn, gboolean accepted ) {
@@ -287,10 +303,7 @@ int callback( struct nfq_q_handle *qh, struct nfgenmsg *nfmsg, struct nfq_data *
 	}
 
 	/* 1st step: build key for hashtable: src ip || src port */
-	if ((key = malloc(sizeof(hash_key_t))) == NULL) {
-		VRB("Exiting because malloc() returned NULL.\n");
-		exit(1);
-	}
+	key = xmalloc(sizeof(hash_key_t));
 	key->src_ip = ntohl(iphdr->saddr);
 	key->src_port = ntohs(tcphdr->source);
 	key->dummy = 0;
@@ -324,7 +337,7 @@ int callback( struct nfq_q_handle *qh, struct nfgenmsg *nfmsg, struct nfq_data *
 		/* we haven't seen this host yet - add new entry to hash table */
 		DBG("Adding previously unseen " \
 			"host (%u.%u.%u.%u:%u) to hash table.\n", IP2DEC(key), key->src_port);
-		hash_val_t *new_conn = malloc(sizeof(hash_val_t));
+		hash_val_t *new_conn = xmalloc(sizeof(hash_val_t));
 		new_conn->timestamp = time(NULL);
 		new_conn->counter = 0; /* no retransmissions yet */
 
@@ -494,8 +507,7 @@ int main( int argc, char **argv ) {
 		}
 	}
 
-	printf("\n!!!\n!!! WARNING - brdgrd has not been audited yet. " \
-		"Don't use it in productive environments!\n!!!\n\n");
+	printf("\nWarning - brdgrd did not get a code audit yet. Use it with care.\n\n");
 
 	/* dump configuration to stdout for the user to verify */
 	VRB("Configuration:\n\ttimeout = %ds\n\tSYN retransmissions = %d\n\tcleanup threshold " \
