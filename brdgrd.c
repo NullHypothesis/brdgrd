@@ -63,6 +63,8 @@ static unsigned int timeout = 40;
 static unsigned int cleanup_threshold = 5;
 static int queue_number = 1;
 static char *logfile = NULL;
+static int win_size = 0;
+static char libnet_err_buf[LIBNET_ERRBUF_SIZE] = { 0 };
 
 typedef struct timewin {
 	uint16_t begin;
@@ -254,6 +256,64 @@ static inline int tcp_syn_segment( struct iphdr *iphdr,
 	return 0;
 }
 
+/* Quick check if we are dealing with a TCP SYN/ACK segment. If not,
+ * 0 is returned.
+ */
+static inline int tcp_synack_segment( struct iphdr *iphdr,
+	struct tcphdr *tcphdr ) {
+
+	/* check for IP protocol field */
+	if (iphdr->protocol != 6) {
+		return 0;
+	}
+
+	/* check for set bits in TCP hdr */
+	if (tcphdr->urg == 0 &&
+		tcphdr->ack == 1 &&
+		tcphdr->psh == 0 &&
+		tcphdr->rst == 0 &&
+		tcphdr->syn == 1 &&
+		tcphdr->fin == 0) {
+		return 1;
+	}
+
+	return 0;
+}
+
+/* This function tries to rewrite the TCP window size in the SYN/ACK which is
+ * sent by the Tor bridge to the client. This is done without the bridge
+ * knowing and hence a dirty hack. The purpose is to force the client to send a
+ * small TCP segment after the handshake so that the cipher list inside the TLS
+ * client hello gets fragmented across several segments (the GFC does not
+ * conduct packet reassembly).
+ */
+int rewrite_win_size( unsigned char *packet ) {
+
+	struct iphdr *iphdr = (struct iphdr *) packet;
+	struct tcphdr *tcphdr = (struct tcphdr *) (packet + (iphdr->ihl * 4));
+	static libnet_t *ln = NULL;
+
+	DBG("Window size before rewriting: %u\n", ntohs(tcphdr->window));
+	tcphdr->window = htons(win_size);
+
+	if (!ln) {
+		DBG("Initializing libnet for checksum calculation.\n");
+		/* initialize libnet for calculating the new checksum */
+		if ((ln = libnet_init(LIBNET_LINK, NULL, libnet_err_buf)) == NULL) {
+			fprintf(stderr, "Error: libnet_init() failed.\n");
+			return 1;
+		}
+	}
+
+	/* recalculate tcp checksum */
+	if (libnet_do_checksum(ln, packet, 6, ntohs(iphdr->tot_len) - (iphdr->ihl*4)) == -1) {
+		fprintf(stderr, "Error while recalculating TCP segment checksum.\n");
+		return 1;
+	}
+
+	return 0;
+}
+
 
 /* Callback function which is called for every incoming packet.
  * It issues a verdict for every packet which is either ACCEPT
@@ -272,6 +332,7 @@ int callback( struct nfq_q_handle *qh, struct nfgenmsg *nfmsg, struct nfq_data *
 	time_t now = 0;
 	int id = 0;
 
+	printf("\n");
 	ph = nfq_get_msg_packet_hdr(nfa);
 	if (ph) {
 		id = ntohl(ph->packet_id);
@@ -297,9 +358,29 @@ int callback( struct nfq_q_handle *qh, struct nfgenmsg *nfmsg, struct nfq_data *
 
 	/* check if we are dealing with a TCP SYN segment */
 	if (!tcp_syn_segment(iphdr, tcphdr)) {
-		fprintf(stderr, "We received something which is no TCP SYN segment. " \
-			"Are your iptables rules correct?\n");
-		return nfq_set_verdict(qh, id, NF_DROP, 0, NULL);
+
+		/* we rewrite the window size in the SYN/ACK */
+		if (tcp_synack_segment(iphdr, tcphdr)) {
+			if (!win_size) {
+				fprintf(stderr, "We received a SYN/ACK but the TCP window size is not defined.  " \
+					"Are your iptables rules correct?\n");
+				return nfq_set_verdict(qh, id, NF_ACCEPT, 0, NULL);
+			}
+
+			DBG("Attempting to rewrite TCP window size in SYN/ACK.\n");
+			if (rewrite_win_size(packet) != 0) {
+				DBG("Rewriting the window size failed. Letting segment pass.\n");
+				return nfq_set_verdict(qh, id, NF_ACCEPT, 0, NULL);
+			}
+
+			DBG("Reinjecting SYN/ACK with window size set to %d.\n", win_size);
+			return nfq_set_verdict(qh, id, NF_ACCEPT, ntohs(iphdr->tot_len), packet);
+		/* something != SYN or SYN/ACK */
+		} else {
+			fprintf(stderr, "We received something other than a TCP SYN or SYN/ACK segment. " \
+				"Are your iptables rules correct?\n");
+			return nfq_set_verdict(qh, id, NF_ACCEPT, 0, NULL);
+		}
 	}
 
 	/* 1st step: build key for hashtable: src ip || src port */
@@ -311,7 +392,6 @@ int callback( struct nfq_q_handle *qh, struct nfgenmsg *nfmsg, struct nfq_data *
 	/* 2nd step: search hash table for key */
 	conn = g_hash_table_lookup(host_table, key);
 
-	printf("\n");
 	print_time();
 	VRB("Incoming SYN segment from %u.%u.%u.%u:%u.\n", IP2DEC(key), key->src_port);
 
@@ -391,6 +471,7 @@ void help( const char *argv ) {
 	printf("\t-h, --help\t\tShow this help message and exit.\n");
 	printf("\t-v, --verbose\t\tEnable verbose mode and print much information.\n");
 	printf("\t-d, --debug\t\tEnable debug mode and print even more information.\n");
+	printf("\t-w, --winsize\t\tRewrite the bridge's TCP window size in order to fragment the TLS client hello.\n");
 	printf("\t-q, --queue=NUM\t\tThe NFQUEUE number to attach to.\n");
 	printf("\t-r, --retrans=NUM\tHow many TCP SYN retransmissions do we require?\n");
 	printf("\t-t, --timeout=NUM\tWhen should a ``SYN knocking session'' time out?\n");
@@ -457,6 +538,7 @@ int main( int argc, char **argv ) {
 		{"debug",		no_argument,		&debug,		1},
 		{"verbose",		no_argument,		&verbose,	1},
 		{"help",		no_argument,		NULL,	'h'},
+		{"winsize",		required_argument,	NULL, 	'w'},
 		{"dwin-begin",	required_argument,	NULL,	'b'},
 		{"dwin-end",	required_argument,	NULL,	'e'},
 		{"queue",		required_argument,	NULL,	'q'},
@@ -473,7 +555,7 @@ int main( int argc, char **argv ) {
 	/* parse cmdline options */
 	while (1) {
 
-		current_opt = getopt_long(argc, argv, "hdvr:t:c:l:q:b:e:", long_options, &option_index);
+		current_opt = getopt_long(argc, argv, "hdvr:t:c:l:q:b:e:w:", long_options, &option_index);
 
 		/* end of options? */
 		if (current_opt == -1) {
@@ -498,6 +580,8 @@ int main( int argc, char **argv ) {
 				break;
 			case 'l': logfile = optarg;
 				break;
+			case 'w': win_size = atoi(optarg);
+				break;
 			case 'q': queue_number = atoi(optarg);
 				break;
 			case 'h': help(argv[0]);
@@ -507,13 +591,14 @@ int main( int argc, char **argv ) {
 		}
 	}
 
-	printf("\nWarning - brdgrd did not get a code audit yet. Use it with care.\n\n");
+	printf("\nWARNING - This is experimental and largely untested software.\n" \
+		"WARNING - DO NOT use it unless you know what you are doing!\n\n");
 
 	/* dump configuration to stdout for the user to verify */
 	VRB("Configuration:\n\ttimeout = %ds\n\tSYN retransmissions = %d\n\tcleanup threshold " \
 		"= %d\n\tnetfilter queue = %d\n\tlogfile = %s\n\tdeaf window begin = %d\n\tdeaf window " \
-		"end = %d\n", timeout, retrans_limit, cleanup_threshold, queue_number, logfile ?
-		logfile : "n/a", deaf_window.begin, deaf_window.end);
+		"end = %d\n\twindow size= %d\n", timeout, retrans_limit, cleanup_threshold, queue_number, \
+			logfile ? logfile : "n/a", deaf_window.begin, deaf_window.end, win_size);
 
 	DBG("Creating hash table to keep track of connecting hosts.\n");
 	host_table = g_hash_table_new_full(g_int64_hash, key_equal, data_destroy_func, data_destroy_func);
