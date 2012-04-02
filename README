@@ -1,21 +1,31 @@
 brdgrd is short for ``bridge guard'': A program which is meant to protect Tor
-bridges from being scanned (and as a result blocked) by chinese probes [1].
+bridges from being scanned (and as a result blocked) by the Great Firewall of
+China [1,2].
 
 The program runs in user space and makes use of libnetfilter_queue to get
-packets passed from kernel to user space. Only TCP SYN segments are passed to
-user space: brdgrd is only interested in TCP handshakes and not in established
-TCP connections. Hence, the performance implications are minimal.
+packets passed from kernel to user space. Only certain TCP SYN and SYN/ACK
+segments are passed to user space. Brdgrd is only interested in TCP handshakes
+and not in established TCP connections. Once a TCP connection is established,
+brdgrd does not interfere with it. Hence, the performance implications are
+minimal.
 
-brdgrd exploits a number of chinese scanning characteristics in order to be able
-to block probes:
-- Scanners mostly connect within three minutes after every 15-minute-interval.
-  Within this short interval, brdgrd acts deaf and blocks all new connections.
+Brdgrd basically intercepts the SYN and SYN/ACK exchanged by the bridge and the
+client and analyzes and/or rewrites certain data. Note that all this is
+configurable. However, brdgrd comes with sane defaults.
+
+- The TCP window size announced by the bridge bridge can be rewritten to a
+  configurable value (which must be smaller than ~100). That way, the client
+  will fragment the cipher list inside the TLS client hello. The GFC will not
+  recognize the cipher list (it does not seem to conduct packet reassembly) and
+  as a result will not scan the bridge.
 - The IP address 202.108.181.70 was found to be a special scanner. It appears
   in many scans and is statically blacklisted by brdgrd.
-- Chinese scanners seem to have set their TCP retransmissions to 1. After the
+- Chinese scanners seem to have their TCP retransmissions set to 1. After the
   one and only retransmission failed, the scanners give up. So brdgrd only
   accepts SYNs if at least two retransmissions were observed. Recent versions of
   Windows and Linux both do this.
+- Scanners mostly connect after multiples of 15 minutes. Within this interval,
+  brdgrd acts deaf and blocks all new connections.
 
 If brdgrd assumes that a connecting host is a chinese scanner, it tells the
 kernel to drop the SYN segment. We can not tolerate false negatives since a
@@ -55,5 +65,5 @@ Please send patches, suggestions and comments to philipp.winter@kau.se
 My GnuPG fingerprint is: 2A9F 5FBF 714D 42A9 F82C 0FEB 268C D15D 2D08 1E16.
 
 
-[1] See https://gist.github.com/da3c7a9af01d74cd7de7 for details about chinese
-    Tor scanning.
+[1] https://gist.github.com/da3c7a9af01d74cd7de7
+[2] http://www.cs.kau.se/philwint/static/gfc/
