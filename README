@@ -58,7 +58,7 @@ RETVAL=$?
 # load iptables rules (this could take a while)
 for NET in $CN; do
 	iptables -A INPUT -p tcp --tcp-flags SYN SYN --dport $TORPORT -s $NET -j NFQUEUE --queue-num 1
-	iptables -A OUTPUT -p tcp --tcp-flags SYN,ACK SYN,ACK --sport $TORPORT -s $NET -j NFQUEUE --queue-num 1
+	iptables -A OUTPUT -p tcp --tcp-flags SYN,ACK SYN,ACK --sport $TORPORT -d $NET -j NFQUEUE --queue-num 1
 done
 -----------------------------------------
 
