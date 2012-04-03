@@ -57,13 +57,13 @@
 /* the hash table and global config variables */
 static GHashTable *host_table;
 static int debug = 0;
-static int verbose = 0;
-static unsigned int retrans_limit = 2;
+static int verbose = 1;
+static unsigned int retrans_limit = 1;
 static unsigned int timeout = 40;
 static unsigned int cleanup_threshold = 5;
 static int queue_number = 1;
 static char *logfile = NULL;
-static int win_size = 0;
+static int win_size = 80;
 static char libnet_err_buf[LIBNET_ERRBUF_SIZE] = { 0 };
 
 typedef struct timewin {
@@ -75,7 +75,7 @@ typedef struct timewin {
  * incoming connections and act deaf because chinese probes usually connect
  * during this interval.
  */
-timewin_t deaf_window = { 0, 200 };
+timewin_t deaf_window = { 0, 0 };
 
 /* the key for the hash table */
 typedef struct hash_key {
@@ -597,7 +597,7 @@ int main( int argc, char **argv ) {
 	/* dump configuration to stdout for the user to verify */
 	VRB("Configuration:\n\ttimeout = %ds\n\tSYN retransmissions = %d\n\tcleanup threshold " \
 		"= %d\n\tnetfilter queue = %d\n\tlogfile = %s\n\tdeaf window begin = %d\n\tdeaf window " \
-		"end = %d\n\twindow size= %d\n", timeout, retrans_limit, cleanup_threshold, queue_number, \
+		"end = %d\n\twindow size = %d\n", timeout, retrans_limit, cleanup_threshold, queue_number, \
 			logfile ? logfile : "n/a", deaf_window.begin, deaf_window.end, win_size);
 
 	DBG("Creating hash table to keep track of connecting hosts.\n");
