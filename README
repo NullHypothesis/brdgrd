@@ -3,11 +3,10 @@ bridges from being scanned (and as a result blocked) by the Great Firewall of
 China [1,2].
 
 The program runs in user space and makes use of libnetfilter_queue to get
-packets passed from kernel to user space. Only certain TCP SYN and SYN/ACK
-segments are passed to user space. Brdgrd is only interested in TCP handshakes
-and not in established TCP connections. Once a TCP connection is established,
-brdgrd does not interfere with it. Hence, the performance implications are
-minimal.
+packets passed from kernel to user space. Only TCP SYN and SYN/ACK segments are
+passed to user space. Brdgrd is only interested in TCP handshakes and not in
+established TCP connections. Once a TCP connection is established, brdgrd does
+not interfere with it. Hence, the performance implications are minimal.
 
 Brdgrd basically intercepts the SYN and SYN/ACK exchanged by the bridge and the
 client and analyzes and/or rewrites certain data. Note that all this is
@@ -17,7 +16,8 @@ configurable. However, brdgrd comes with sane defaults.
   configurable value (which must be smaller than ~100). That way, the client
   will fragment the cipher list inside the TLS client hello. The GFC will not
   recognize the cipher list (it does not seem to conduct packet reassembly) and
-  as a result will not scan the bridge.
+  as a result will not scan the bridge. This technique was found to be the most
+  effective one.
 - The IP address 202.108.181.70 was found to be a special scanner. It appears
   in many scans and is statically blacklisted by brdgrd.
 - Chinese scanners seem to have their TCP retransmissions set to 1. After the
@@ -25,27 +25,29 @@ configurable. However, brdgrd comes with sane defaults.
   accepts SYNs if at least two retransmissions were observed. Recent versions of
   Windows and Linux both do this.
 - Scanners mostly connect after multiples of 15 minutes. Within this interval,
-  brdgrd acts deaf and blocks all new connections.
+  brdgrd can act deaf and block all incoming connections.
 
-If brdgrd assumes that a connecting host is a chinese scanner, it tells the
+If brdgrd assumes that a connecting host is a Chinese scanner, it tells the
 kernel to drop the SYN segment. We can not tolerate false negatives since a
-_single_ successful chinese scan leads to the block of a bridge. The very
+_single_ successful Chinese scan leads to the block of a bridge. The very
 purpose of brdgrd is to avoid this. So we have to trade off many false positives
 for (hopefully) no false negatives.
 
-Most options are configurable. E.g., you can increase the required
-retransmissions (and lock out many users) or you can increase the ``deaf
-window'' (and accept more false positives).
-
-You should make sure that brdgrd only deals with chinese IP addresses so that
-bridge users from other countries are not affected. The following hack does
-this:
+Brdgrd needs iptables rules to feed it with data. The following scripts passes
+TCP SYNs and SYN/ACKs coming _only_ from Chinese IP addresses to brdgrd. That
+way, brdgrd does _not_ interfere with any Tor connections originating from other
+countries:
 
 -----------------------------------------
 #!/bin/bash
+# set the port to your needs
+TORPORT=443
+
+# download latest APNIC data for Chinese networks
 if [ ! -e delegated-apnic-latest ]; then
 	wget http://ftp.apnic.net/stats/apnic/delegated-apnic-latest
 fi
+# parse data (the tool 'aggregate' is needed)
 CN=`cat delegated-apnic-latest |
 	awk -F\| '/^apnic\|CN\|ipv4\|/ { print $4"/" 32-log($5)/log(2) }' |
 	aggregate -q -`
@@ -53,13 +55,17 @@ RETVAL=$?
 [ $RETVAL -eq 0 ] && echo "Successfully parsed chinese network list."
 [ $RETVAL -ne 0 ] && (echo "Failure in parsing chinese network list." ; exit)
 
+# load iptables rules (this could take a while)
 for NET in $CN; do
-	iptables -A INPUT -m state --state NEW -p tcp --dport <bridge-port> -s $NET -j NFQUEUE --queue-num 1
+	iptables -A INPUT -p tcp --tcp-flags SYN SYN --dport $TORPORT -s $NET -j NFQUEUE --queue-num 1
+	iptables -A OUTPUT -p tcp --tcp-flags SYN,ACK SYN,ACK --sport $TORPORT -s $NET -j NFQUEUE --queue-num 1
 done
 -----------------------------------------
 
 Afterwards, you can compile brdgrd by typing ``make'' and start it by typing
-``./brdgrd -v''.
+``./brdgrd -v''. Keep in mind that the above iptables rules try to push SYNs and
+SYN/ACKs to userspace. If brdgrd is not running, new Chinese connections can not
+be handled by Tor since there is no userspace program receiving the data.
 
 Please send patches, suggestions and comments to philipp.winter@kau.se
 My GnuPG fingerprint is: 2A9F 5FBF 714D 42A9 F82C 0FEB 268C D15D 2D08 1E16.
