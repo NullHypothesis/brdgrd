@@ -359,14 +359,13 @@ int callback( struct nfq_q_handle *qh, struct nfgenmsg *nfmsg, struct nfq_data *
 	/* check if we are dealing with a TCP SYN segment */
 	if (!tcp_syn_segment(iphdr, tcphdr)) {
 
-		/* we rewrite the window size in the SYN/ACK */
 		if (tcp_synack_segment(iphdr, tcphdr)) {
 			if (!win_size) {
-				fprintf(stderr, "We received a SYN/ACK but the TCP window size is not defined.  " \
-					"Are your iptables rules correct?\n");
+				/* let the segment pass if we don't need to rewrite */
 				return nfq_set_verdict(qh, id, NF_ACCEPT, 0, NULL);
 			}
 
+			/* we got a SYN/ACK and the window size is set: let's rewrite */
 			DBG("Attempting to rewrite TCP window size in SYN/ACK.\n");
 			if (rewrite_win_size(packet) != 0) {
 				DBG("Rewriting the window size failed. Letting segment pass.\n");
