@@ -34,12 +34,6 @@
 #define ACCEPTED	1
 #define REJECTED	0
 
-/* 32bit IP integer to dotted decimal notation suitable for printf() */
-#define IP2DEC(k)	((k)->src_ip & 0xff000000U) >> 24, \
-					((k)->src_ip & 0x00ff0000U) >> 16, \
-					((k)->src_ip & 0x0000ff00U) >> 8, \
-					((k)->src_ip & 0x000000ffU)
-
 /* used to print verbose messages to stdout */
 #define VRB(...) \
 	if (verbose) { \
@@ -62,7 +56,6 @@ static unsigned int retrans_limit = 1;
 static unsigned int timeout = 40;
 static unsigned int cleanup_threshold = 5;
 static int queue_number = 1;
-static char *logfile = NULL;
 static int win_size = 80;
 static char libnet_err_buf[LIBNET_ERRBUF_SIZE] = { 0 };
 
@@ -119,35 +112,6 @@ void *xmalloc( size_t size ) {
 }
 
 
-/* Log the given hash table entry to the logfile.
- */
-void log_connection( hash_key_t *key, hash_val_t *conn, gboolean accepted ) {
-
-	static FILE *fp = NULL;
-	static char log_record[100] = { 0 };
-
-	/* return if user does not want logs */
-	if (logfile == NULL) {
-		return;
-	}
-
-	if (fp == NULL) {
-		DBG("Opening logfile \"%s\".\n", logfile);
-		if ((fp = fopen(logfile, "a")) == NULL) {
-			perror("Error: fopen() failed");
-			return;
-		}
-	}
-
-	/* log host to file */
-	snprintf(log_record, sizeof(log_record), "%s\t%u.%u.%u.%u:%u\t->\t%lu\t%u\n", \
-		accepted ? "ACCEPT" : "DROP", IP2DEC(key), key->src_port, \
-		conn->timestamp, conn->counter);
-	fwrite(log_record, strnlen(log_record, sizeof(log_record)), 1, fp);
-	fflush(fp);
-}
-
-
 /* Generic function to free data from the hash table.
  */
 void data_destroy_func( gpointer data ) {
@@ -174,11 +138,9 @@ static inline gboolean key_equal( gconstpointer a, gconstpointer b ) {
 static gboolean garbage_collect( gpointer key, gpointer value,
 		gpointer now) {
 
-	hash_key_t *k = key;
 	hash_val_t *conn = value;
 
 	if ((*((time_t *) now) - conn->timestamp) > timeout) {
-		log_connection(k, conn, REJECTED);
 		return TRUE; /* delete entry */
 	} else {
 		return FALSE; /* keep entry */
@@ -190,7 +152,6 @@ static gboolean garbage_collect( gpointer key, gpointer value,
  */
 static inline void print_entry( gpointer key, gpointer value, gpointer user_data ) {
 
-	hash_key_t *k = key;
 	hash_val_t *conn = value;
 	struct tm *tmp = NULL;
 	char timestr[50] = { 0 };
@@ -202,8 +163,7 @@ static inline void print_entry( gpointer key, gpointer value, gpointer user_data
 
 	strftime(timestr, sizeof(timestr), "%F %T", tmp);
 
-	printf("\t(%u.%u.%u.%u:%u) -> (%s / %u)\n", IP2DEC(k), k->src_port,
-		timestr, conn->counter);
+	printf("\t(%s / %u)\n", timestr, conn->counter);
 }
 
 
@@ -392,7 +352,7 @@ int callback( struct nfq_q_handle *qh, struct nfgenmsg *nfmsg, struct nfq_data *
 	conn = g_hash_table_lookup(host_table, key);
 
 	print_time();
-	VRB("Incoming SYN segment from %u.%u.%u.%u:%u.\n", IP2DEC(key), key->src_port);
+	VRB("Incoming SYN segment.\n");
 
 	/* are we supposed to act deaf right now? */
 	now = time(NULL);
@@ -414,16 +374,14 @@ int callback( struct nfq_q_handle *qh, struct nfgenmsg *nfmsg, struct nfq_data *
 	/* 3rd step: check if host should be allowed to connect */
 	if (conn == NULL) {
 		/* we haven't seen this host yet - add new entry to hash table */
-		DBG("Adding previously unseen " \
-			"host (%u.%u.%u.%u:%u) to hash table.\n", IP2DEC(key), key->src_port);
+		DBG("Adding previously unseen host to hash table.\n");
 		hash_val_t *new_conn = xmalloc(sizeof(hash_val_t));
 		new_conn->timestamp = time(NULL);
 		new_conn->counter = 0; /* no retransmissions yet */
 
 		g_hash_table_insert(host_table, key, new_conn);
 	} else {
-		DBG("Found host (%u.%u.%u.%u:%u) in hash table.\n",
-			IP2DEC(key), key->src_port);
+		DBG("Found host in hash table.\n");
 		conn->counter++;
 
 		/* we only accept the packet if it was retransmitted often enough within
@@ -432,8 +390,7 @@ int callback( struct nfq_q_handle *qh, struct nfgenmsg *nfmsg, struct nfq_data *
 			if ((now - (conn->timestamp)) < timeout) {
 				VRB("ACCEPT - Because the client retransmitted %u " \
 					"times within the timeout.\n", retrans_limit);
-				/* log connection and remove host from hash table */
-				log_connection(key, conn, ACCEPTED);
+				/* remove host from hash table */
 				g_hash_table_remove(host_table, key);
 				return nfq_set_verdict(qh, id, NF_ACCEPT, 0, NULL);
 			} else {
@@ -475,7 +432,6 @@ void help( const char *argv ) {
 	printf("\t-r, --retrans=NUM\tHow many TCP SYN retransmissions do we require?\n");
 	printf("\t-t, --timeout=NUM\tWhen should a ``SYN knocking session'' time out?\n");
 	printf("\t-c, --cleanup=NUM\tTrigger garbage collection after the hash table has NUM entries.\n");
-	printf("\t-l, --logfile=FILE\tLog all hosts which are not passing the SYN test to FILE.\n");
 	printf("\t-b, --dwin-begin=SECS\tAmount of seconds after every 15-min-interval where we begin " \
 		"to drop SYNs.\n");
 	printf("\t-e, --dwin-end=SECS\tAmount of seconds after every 15-min-interval where we stop " \
@@ -543,7 +499,6 @@ int main( int argc, char **argv ) {
 		{"queue",		required_argument,	NULL,	'q'},
 		{"retrans",		required_argument,	NULL,	'r'},
 		{"timeout",		required_argument,	NULL,	't'},
-		{"logfile",		required_argument,	NULL,	'l'},
 		{"cleanup",		required_argument,	NULL,	'c'},
 		{0, 0, 0, 0}
 	};
@@ -554,7 +509,7 @@ int main( int argc, char **argv ) {
 	/* parse cmdline options */
 	while (1) {
 
-		current_opt = getopt_long(argc, argv, "hdvr:t:c:l:q:b:e:w:", long_options, &option_index);
+		current_opt = getopt_long(argc, argv, "hdvr:t:c:q:b:e:w:", long_options, &option_index);
 
 		/* end of options? */
 		if (current_opt == -1) {
@@ -577,8 +532,6 @@ int main( int argc, char **argv ) {
 				break;
 			case 'e': deaf_window.end = atoi(optarg);
 				break;
-			case 'l': logfile = optarg;
-				break;
 			case 'w': win_size = atoi(optarg);
 				break;
 			case 'q': queue_number = atoi(optarg);
@@ -595,9 +548,9 @@ int main( int argc, char **argv ) {
 
 	/* dump configuration to stdout for the user to verify */
 	VRB("Configuration:\n\ttimeout = %ds\n\tSYN retransmissions = %d\n\tcleanup threshold " \
-		"= %d\n\tnetfilter queue = %d\n\tlogfile = %s\n\tdeaf window begin = %d\n\tdeaf window " \
+		"= %d\n\tnetfilter queue = %d\n\tdeaf window begin = %d\n\tdeaf window " \
 		"end = %d\n\twindow size = %d\n", timeout, retrans_limit, cleanup_threshold, queue_number, \
-			logfile ? logfile : "n/a", deaf_window.begin, deaf_window.end, win_size);
+			deaf_window.begin, deaf_window.end, win_size);
 
 	DBG("Creating hash table to keep track of connecting hosts.\n");
 	host_table = g_hash_table_new_full(g_int64_hash, key_equal, data_destroy_func, data_destroy_func);
