@@ -462,7 +462,7 @@ int init_libnfq( struct nfq_handle **h, struct nfq_q_handle **qh ) {
 		return 1;
 	}
 
-	DBG("Binding this socket to queue '0'.\n");
+	DBG("Binding this socket to queue '%d'.\n", queue_number);
 	*qh = nfq_create_queue(*h,  queue_number, &callback, NULL);
 	if (!(*qh)) {
 		fprintf(stderr, "Error: nfq_create_queue() failed.\n");
