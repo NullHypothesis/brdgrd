@@ -20,10 +20,8 @@
 #include <stdio.h>
 #include <time.h>
 #include <sys/time.h>
-#include <glib.h>
 #include <stdlib.h>
 #include <libnet.h>
-#include <string.h>
 #include <getopt.h>
 #include <netinet/ip.h>
 #include <netinet/tcp.h>
@@ -41,50 +39,15 @@
 		print(__VA_ARGS__); \
 	}
 
-/* used to print debug messages to stdout */
-#define DBG(...) \
-	if (debug) { \
-		printf("[D] "); \
-		print(__VA_ARGS__); \
-	}
 
 /* the hash table and global config variables */
-static GHashTable *host_table;
-static int debug = 0;
-static int verbose = 1;
-static unsigned int retrans_limit = 1;
-static unsigned int timeout = 40;
-static unsigned int cleanup_threshold = 5;
+static int verbose = 0;
 static int queue_number = 1;
 static int win_size = 80;
 static char libnet_err_buf[LIBNET_ERRBUF_SIZE] = { 0 };
 
-typedef struct timewin {
-	uint16_t begin;
-	uint16_t end;
-} timewin_t;
 
-/* during this time window (in seconds) after every 15-min-interval, we ignore
- * incoming connections and act deaf because chinese probes usually connect
- * during this interval.
- */
-timewin_t deaf_window = { 0, 0 };
-
-/* the key for the hash table */
-typedef struct hash_key {
-	uint32_t src_ip;
-	uint16_t src_port;
-	uint16_t dummy; /* pad struct to 64 bit */
-} hash_key_t;
-
-/* the value for the hash table */
-typedef struct hash_value {
-	time_t timestamp;
-	uint32_t counter;
-} hash_val_t;
-
-
-/* Wrapped by the VRB() and DBG() macros.
+/* Wrapped by the VRB() macros.
  */
 static void print( const char *fmt, ... ) {
 
@@ -93,77 +56,6 @@ static void print( const char *fmt, ... ) {
 	va_start(ap, fmt);
 	vprintf(fmt, ap);
 	va_end(ap);
-}
-
-
-/* malloc() wrapper which prints an error message and exits if malloc()
- * returns NULL.
- */
-void *xmalloc( size_t size ) {
-
-	void *mem = malloc(size);
-
-	if (mem == NULL) {
-		VRB("Exiting because malloc() returned NULL.\n");
-		exit(1);
-	}
-
-	return mem;
-}
-
-
-/* Generic function to free data from the hash table.
- */
-void data_destroy_func( gpointer data ) {
-
-	if (data != NULL) {
-		free(data);
-	}
-}
-
-
-/* Compares the two given hash keys for equality.
- */
-static inline gboolean key_equal( gconstpointer a, gconstpointer b ) {
-
-	return ((((hash_key_t *) a)->src_ip == ((hash_key_t *) b)->src_ip) &&
-		(((hash_key_t *) a)->src_port == ((hash_key_t *) b)->src_port));
-}
-
-
-/* This function signalizes to the caller that a hash table entry should be
- * removed if it timed out. It's purpose is to provide a primitive garbage
- * collector.
- */
-static gboolean garbage_collect( gpointer key, gpointer value,
-		gpointer now) {
-
-	hash_val_t *conn = value;
-
-	if ((*((time_t *) now) - conn->timestamp) > timeout) {
-		return TRUE; /* delete entry */
-	} else {
-		return FALSE; /* keep entry */
-	}
-}
-
-
-/* Prints the given hash table entry to stdout.
- */
-static inline void print_entry( gpointer key, gpointer value, gpointer user_data ) {
-
-	hash_val_t *conn = value;
-	struct tm *tmp = NULL;
-	char timestr[50] = { 0 };
-
-	if ((tmp = localtime(&(conn->timestamp))) == NULL) {
-		DBG("localtime() failed.\n");
-		return;
-	}
-
-	strftime(timestr, sizeof(timestr), "%F %T", tmp);
-
-	printf("\t(%s / %u)\n", timestr, conn->counter);
 }
 
 
@@ -182,7 +74,7 @@ static inline void print_time( void ) {
 	}
 
 	if ((tmp = localtime(&now)) == NULL) {
-		DBG("localtime() failed.\n");
+		VRB("localtime() failed.\n");
 		return;
 	}
 
@@ -191,30 +83,6 @@ static inline void print_time( void ) {
 	VRB("Time: %s.%03ld\n", timestr, tv.tv_usec/1000);
 }
 
-
-/* Quick check if we are dealing with a TCP SYN segment. If not,
- * 0 is returned.
- */
-static inline int tcp_syn_segment( struct iphdr *iphdr,
-	struct tcphdr *tcphdr ) {
-
-	/* check for IP protocol field */
-	if (iphdr->protocol != 6) {
-		return 0;
-	}
-
-	/* check for set bits in TCP hdr */
-	if (tcphdr->urg == 0 &&
-		tcphdr->ack == 0 &&
-		tcphdr->psh == 0 &&
-		tcphdr->rst == 0 &&
-		tcphdr->syn == 1 &&
-		tcphdr->fin == 0) {
-		return 1;
-	}
-
-	return 0;
-}
 
 /* Quick check if we are dealing with a TCP SYN/ACK segment. If not,
  * 0 is returned.
@@ -253,11 +121,11 @@ int rewrite_win_size( unsigned char *packet ) {
 	struct tcphdr *tcphdr = (struct tcphdr *) (packet + (iphdr->ihl * 4));
 	static libnet_t *ln = NULL;
 
-	DBG("Window size before rewriting: %u\n", ntohs(tcphdr->window));
+	VRB("Window size before rewriting: %u\n", ntohs(tcphdr->window));
 	tcphdr->window = htons(win_size);
 
 	if (!ln) {
-		DBG("Initializing libnet for checksum calculation.\n");
+		VRB("Initializing libnet for checksum calculation.\n");
 		/* initialize libnet for calculating the new checksum */
 		if ((ln = libnet_init(LIBNET_LINK, NULL, libnet_err_buf)) == NULL) {
 			fprintf(stderr, "Error: libnet_init() failed.\n");
@@ -285,11 +153,8 @@ int callback( struct nfq_q_handle *qh, struct nfgenmsg *nfmsg, struct nfq_data *
 
 	struct iphdr *iphdr = NULL;
 	struct tcphdr *tcphdr = NULL;
-	hash_key_t *key = NULL;
-	hash_val_t *conn = NULL;
 	struct nfqnl_msg_packet_hdr *ph = NULL;
 	unsigned char *packet= NULL;
-	time_t now = 0;
 	int id = 0;
 
 	printf("\n");
@@ -316,104 +181,27 @@ int callback( struct nfq_q_handle *qh, struct nfgenmsg *nfmsg, struct nfq_data *
 	}
 	tcphdr = (struct tcphdr *) (packet + (iphdr->ihl * 4));
 
-	/* check if we are dealing with a TCP SYN segment */
-	if (!tcp_syn_segment(iphdr, tcphdr)) {
+	print_time();
 
-		if (tcp_synack_segment(iphdr, tcphdr)) {
-			if (!win_size) {
-				/* let the segment pass if we don't need to rewrite */
-				return nfq_set_verdict(qh, id, NF_ACCEPT, 0, NULL);
-			}
+	/* check if we are dealing with a TCP SYN/ACK segment */
+	if (tcp_synack_segment(iphdr, tcphdr)) {
 
-			/* we got a SYN/ACK and the window size is set: let's rewrite */
-			DBG("Attempting to rewrite TCP window size in SYN/ACK.\n");
-			if (rewrite_win_size(packet) != 0) {
-				DBG("Rewriting the window size failed. Letting segment pass.\n");
-				return nfq_set_verdict(qh, id, NF_ACCEPT, 0, NULL);
-			}
-
-			DBG("Reinjecting SYN/ACK with window size set to %d.\n", win_size);
-			return nfq_set_verdict(qh, id, NF_ACCEPT, ntohs(iphdr->tot_len), packet);
-		/* something != SYN or SYN/ACK */
-		} else {
-			fprintf(stderr, "We received something other than a TCP SYN or SYN/ACK segment. " \
-				"Are your iptables rules correct?\n");
+		/* we got a SYN/ACK and the window size is set: let's rewrite */
+		VRB("Attempting to rewrite TCP window size in SYN/ACK.\n");
+		if (rewrite_win_size(packet) != 0) {
+			VRB("Rewriting the window size failed. This is probably a bug!\n");
 			return nfq_set_verdict(qh, id, NF_ACCEPT, 0, NULL);
 		}
-	}
 
-	/* 1st step: build key for hashtable: src ip || src port */
-	key = xmalloc(sizeof(hash_key_t));
-	key->src_ip = ntohl(iphdr->saddr);
-	key->src_port = ntohs(tcphdr->source);
-	key->dummy = 0;
+		VRB("Reinjecting SYN/ACK with window size set to %d.\n", win_size);
+		return nfq_set_verdict(qh, id, NF_ACCEPT, ntohs(iphdr->tot_len), packet);
 
-	/* 2nd step: search hash table for key */
-	conn = g_hash_table_lookup(host_table, key);
-
-	print_time();
-	VRB("Incoming SYN segment.\n");
-
-	/* are we supposed to act deaf right now? */
-	now = time(NULL);
-	if (((now % (60 * 15)) >= deaf_window.begin) &&
-		((now % (60 * 15)) <= deaf_window.end)) {
-		VRB("DROP - Because we have to act deaf (pssst, we suspect a chinese probe!).\n");
-		return nfq_set_verdict(qh, id, NF_DROP, 0, NULL);
-	}
-
-	/* the IP 202.108.181.70 was observed to be some sort of chinese 'master'
-	 * probe. it seems to be the only IP which shows up regularly for scanning.
-	 * we might as well blacklist it here.
-	 */
-	if (key->src_ip == 3396121926U) {
-		VRB("DROP - It's the master probe 202.108.181.70\n");
-		return nfq_set_verdict(qh, id, NF_DROP, 0, NULL);
-	}
-
-	/* 3rd step: check if host should be allowed to connect */
-	if (conn == NULL) {
-		/* we haven't seen this host yet - add new entry to hash table */
-		DBG("Adding previously unseen host to hash table.\n");
-		hash_val_t *new_conn = xmalloc(sizeof(hash_val_t));
-		new_conn->timestamp = time(NULL);
-		new_conn->counter = 0; /* no retransmissions yet */
-
-		g_hash_table_insert(host_table, key, new_conn);
+	/* something != SYN or SYN/ACK */
 	} else {
-		DBG("Found host in hash table.\n");
-		conn->counter++;
-
-		/* we only accept the packet if it was retransmitted often enough within
-		   the allowed time span. */
-		if (conn->counter >= retrans_limit) {
-			if ((now - (conn->timestamp)) < timeout) {
-				VRB("ACCEPT - Because the client retransmitted %u " \
-					"times within the timeout.\n", retrans_limit);
-				/* remove host from hash table */
-				g_hash_table_remove(host_table, key);
-				return nfq_set_verdict(qh, id, NF_ACCEPT, 0, NULL);
-			} else {
-				VRB("The client retransmitted often enough " \
-					"but the timer of %u seconds ran out.\n", retrans_limit);
-			}
-		}
-		free(key);
+		fprintf(stderr, "We received something other than a TCP SYN/ACK segment. " \
+			"Are your iptables rules correct?\n");
+		return nfq_set_verdict(qh, id, NF_ACCEPT, 0, NULL);
 	}
-
-	/* if necessary, remove hash table entries which have timed out */
-	if (g_hash_table_size(host_table) > cleanup_threshold) {
-		DBG("Triggering garbage collector to remove old hash table entries.\n");
-		g_hash_table_foreach_remove(host_table, garbage_collect, &now);
-	}
-
-	/* dump hash table for debugging */
-	if (debug) {
-		g_hash_table_foreach(host_table, print_entry, NULL);
-	}
-
-	VRB("DROP - Because the retransmission threshold is not achieved yet.\n");
-	return nfq_set_verdict(qh, id, NF_DROP, 0, NULL);
 }
 
 
@@ -426,50 +214,43 @@ void help( const char *argv ) {
 	printf("Options:\n");
 	printf("\t-h, --help\t\tShow this help message and exit.\n");
 	printf("\t-v, --verbose\t\tEnable verbose mode and print much information.\n");
-	printf("\t-d, --debug\t\tEnable debug mode and print even more information.\n");
-	printf("\t-w, --winsize\t\tRewrite the bridge's TCP window size in order to fragment the TLS client hello.\n");
-	printf("\t-q, --queue=NUM\t\tThe NFQUEUE number to attach to.\n");
-	printf("\t-r, --retrans=NUM\tHow many TCP SYN retransmissions do we require?\n");
-	printf("\t-t, --timeout=NUM\tWhen should a ``SYN knocking session'' time out?\n");
-	printf("\t-c, --cleanup=NUM\tTrigger garbage collection after the hash table has NUM entries.\n");
-	printf("\t-b, --dwin-begin=SECS\tAmount of seconds after every 15-min-interval where we begin " \
-		"to drop SYNs.\n");
-	printf("\t-e, --dwin-end=SECS\tAmount of seconds after every 15-min-interval where we stop " \
-		"to drop SYNs.\n\n");
+	printf("\t-w, --winsize\t\tRewrite the bridge's announced TCP window size (default=%d).\n", win_size);
+	printf("\t-q, --queue=NUM\t\tThe NFQUEUE number to attach to (default=%d).\n", queue_number);
 }
+
 
 /* Initializes libnetfilter_queue. If something fails during the process,
  * 1 is returned. If all is fine, 0 is returned.
  */
 int init_libnfq( struct nfq_handle **h, struct nfq_q_handle **qh ) {
 
-	DBG("Opening library handle.\n");
+	VRB("Opening library handle.\n");
 	*h = nfq_open();
 	if (!(*h)) {
 		fprintf(stderr, "Error: nfq_open() failed.\n");
 		return 1;
 	}
 
-	DBG("Unbinding existing nf_queue handler for AF_INET (if any).\n");
+	VRB("Unbinding existing nf_queue handler for AF_INET (if any).\n");
 	if (nfq_unbind_pf(*h, AF_INET) < 0) {
 		fprintf(stderr, "Error: nfq_unbind_pf() failed.\n");
 		return 1;
 	}
 
-	DBG("Binding nfnetlink_queue as nf_queue handler for AF_INET.\n");
+	VRB("Binding nfnetlink_queue as nf_queue handler for AF_INET.\n");
 	if (nfq_bind_pf(*h, AF_INET) < 0) {
 		fprintf(stderr, "Error: nfq_bind_pf() failed.\n");
 		return 1;
 	}
 
-	DBG("Binding this socket to queue '%d'.\n", queue_number);
+	VRB("Binding this socket to queue '%d'.\n", queue_number);
 	*qh = nfq_create_queue(*h,  queue_number, &callback, NULL);
 	if (!(*qh)) {
 		fprintf(stderr, "Error: nfq_create_queue() failed.\n");
 		return 1;
 	}
 
-	DBG("Setting copy_packet mode.\n");
+	VRB("Setting copy_packet mode.\n");
 	if (nfq_set_mode(*qh, NFQNL_COPY_PACKET, 0xffff) < 0) {
 		fprintf(stderr, "Error: can't set packet_copy mode.\n");
 		return 1;
@@ -490,26 +271,20 @@ int main( int argc, char **argv ) {
 	struct nfq_q_handle *qh = NULL;
 
 	struct option long_options[] = {
-		{"debug",		no_argument,		&debug,		1},
 		{"verbose",		no_argument,		&verbose,	1},
 		{"help",		no_argument,		NULL,	'h'},
 		{"winsize",		required_argument,	NULL, 	'w'},
-		{"dwin-begin",	required_argument,	NULL,	'b'},
-		{"dwin-end",	required_argument,	NULL,	'e'},
 		{"queue",		required_argument,	NULL,	'q'},
-		{"retrans",		required_argument,	NULL,	'r'},
-		{"timeout",		required_argument,	NULL,	't'},
-		{"cleanup",		required_argument,	NULL,	'c'},
 		{0, 0, 0, 0}
 	};
 
-	/* disable buffering for stdout, so log redirection works more smoothly */
+	/* disable buffering for stdout */
 	setvbuf(stdout, NULL, _IONBF, 0);
 
 	/* parse cmdline options */
 	while (1) {
 
-		current_opt = getopt_long(argc, argv, "hdvr:t:c:q:b:e:w:", long_options, &option_index);
+		current_opt = getopt_long(argc, argv, "hvq:w:", long_options, &option_index);
 
 		/* end of options? */
 		if (current_opt == -1) {
@@ -517,20 +292,7 @@ int main( int argc, char **argv ) {
 		}
 
 		switch (current_opt) {
-			case 'd': debug = 1;
-				verbose = 1; /* debug mode implies verbose mode */
-				break;
 			case 'v': verbose = 1;
-				break;
-			case 'r': retrans_limit = atoi(optarg);
-				break;
-			case 't': timeout = atoi(optarg);
-				break;
-			case 'c': cleanup_threshold = atoi(optarg);
-				break;
-			case 'b': deaf_window.begin = atoi(optarg);
-				break;
-			case 'e': deaf_window.end = atoi(optarg);
 				break;
 			case 'w': win_size = atoi(optarg);
 				break;
@@ -543,17 +305,13 @@ int main( int argc, char **argv ) {
 		}
 	}
 
+	/* yes, I am serious! */
 	printf("\nWARNING - This is experimental and largely untested software.\n" \
 		"WARNING - DO NOT use it unless you know what you are doing!\n\n");
 
 	/* dump configuration to stdout for the user to verify */
-	VRB("Configuration:\n\ttimeout = %ds\n\tSYN retransmissions = %d\n\tcleanup threshold " \
-		"= %d\n\tnetfilter queue = %d\n\tdeaf window begin = %d\n\tdeaf window " \
-		"end = %d\n\twindow size = %d\n", timeout, retrans_limit, cleanup_threshold, queue_number, \
-			deaf_window.begin, deaf_window.end, win_size);
-
-	DBG("Creating hash table to keep track of connecting hosts.\n");
-	host_table = g_hash_table_new_full(g_int64_hash, key_equal, data_destroy_func, data_destroy_func);
+	VRB("Configuration:\n\tnetfilter queue = %d\n\twindow size = %d\n", \
+		queue_number, win_size);
 
 	/* exit if initialization failed */
 	if (init_libnfq(&h, &qh) != 0) {
@@ -568,10 +326,10 @@ int main( int argc, char **argv ) {
 		nfq_handle_packet(h, buf, rv);
 	}
 
-	DBG("Unbinding from queue 0.\n");
+	VRB("Unbinding from queue 0.\n");
 	nfq_destroy_queue(qh);
 
-	DBG("Closing library handle.\n");
+	VRB("Closing library handle.\n");
 	nfq_close(h);
 
 	return 0;
