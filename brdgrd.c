@@ -117,6 +117,10 @@ int rewrite_win_size( unsigned char *packet ) {
 	struct tcphdr *tcphdr = (struct tcphdr *) (packet + (iphdr->ihl * 4));
 	static libnet_t *ln = NULL;
 
+	/* we can ignore window scaling because RFC1323 states:
+	 * > The Window field in a SYN (i.e., a <SYN> or <SYN,ACK>) segment
+	 * > itself is never scaled.
+	 */
 	VRB("Window size before rewriting: %u\n", ntohs(tcphdr->window));
 	tcphdr->window = htons(win_size);
 
