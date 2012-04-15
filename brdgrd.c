@@ -28,10 +28,6 @@
 #include <linux/netfilter.h>
 #include <libnetfilter_queue/libnetfilter_queue.h>
 
-/* used for connection logging */
-#define ACCEPTED	1
-#define REJECTED	0
-
 /* used to print verbose messages to stdout */
 #define VRB(...) \
 	if (verbose) { \
