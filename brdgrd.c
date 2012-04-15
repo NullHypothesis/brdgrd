@@ -162,22 +162,22 @@ int callback( struct nfq_q_handle *qh, struct nfgenmsg *nfmsg, struct nfq_data *
 	if (ph) {
 		id = ntohl(ph->packet_id);
 	} else {
-		VRB("Dropping packet because nfq_get_msg_packet_hdr() failed.\n");
-		return nfq_set_verdict(qh, id, NF_DROP, 0, NULL);
+		VRB("Error - the function nfq_get_msg_packet_hdr() failed.\n");
+		return nfq_set_verdict(qh, id, NF_ACCEPT, 0, NULL);
 	}
 
 	/* try to get packet (header + payload) */
 	if (nfq_get_payload(nfa, (char **) &packet) == -1) {
-		VRB("Dropping packet because nfq_get_payload() failed.\n");
-		return nfq_set_verdict(qh, id, NF_DROP, 0, NULL);
+		VRB("Error - the function nfq_get_payload() failed.\n");
+		return nfq_set_verdict(qh, id, NF_ACCEPT, 0, NULL);
 	}
 
 	/* initialize pointers to IP and TCP headers */
 	iphdr = (struct iphdr *) packet;
 	/* RFC 791 defines that the IHL's minimum value is 5 */
 	if ((iphdr->ihl < 5) || (iphdr->ihl > 15)) {
-		VRB("Dropping packet because the IHL in the IP header is invalid.\n");
-		return nfq_set_verdict(qh, id, NF_DROP, 0, NULL);
+		VRB("Error - the IHL (\\x%x) in the IP header is invalid.\n", iphdr->ihl);
+		return nfq_set_verdict(qh, id, NF_ACCEPT, 0, NULL);
 	}
 	tcphdr = (struct tcphdr *) (packet + (iphdr->ihl * 4));
 
@@ -196,7 +196,7 @@ int callback( struct nfq_q_handle *qh, struct nfgenmsg *nfmsg, struct nfq_data *
 		VRB("Reinjecting SYN/ACK with window size set to %d.\n", win_size);
 		return nfq_set_verdict(qh, id, NF_ACCEPT, ntohs(iphdr->tot_len), packet);
 
-	/* something != SYN or SYN/ACK */
+	/* something != SYN/ACK */
 	} else {
 		fprintf(stderr, "We received something other than a TCP SYN/ACK segment. " \
 			"Are your iptables rules correct?\n");
@@ -304,10 +304,6 @@ int main( int argc, char **argv ) {
 				return 1;
 		}
 	}
-
-	/* yes, I am serious! */
-	printf("\nWARNING - This is experimental and largely untested software.\n" \
-		"WARNING - DO NOT use it unless you know what you are doing!\n\n");
 
 	/* dump configuration to stdout for the user to verify */
 	VRB("Configuration:\n\tnetfilter queue = %d\n\twindow size = %d\n", \
