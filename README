@@ -2,11 +2,12 @@ brdgrd is short for ``bridge guard'': A program which is meant to protect Tor
 bridges from being scanned (and as a result blocked) by the Great Firewall of
 China [1,2].
 
-The program runs in user space and makes use of libnetfilter_queue to get
-packets passed from kernel to user space. Only TCP SYN/ACK segments have to be
-passed to user space. Brdgrd is only interested in TCP handshakes and not in
-established TCP connections. Once a TCP connection is established, brdgrd does
-not interfere with it. Hence, the performance implications are minimal.
+The program runs in user space and makes use of libnetfilter_queue (and hence
+only runs on Linux) to get packets passed from kernel to user space. Only TCP
+SYN/ACK segments have to be passed to user space. Brdgrd is only interested in
+TCP handshakes and not in established TCP connections. Once a TCP connection is
+established, brdgrd does not interfere with it. Hence, the performance
+implications are minimal.
 
 Brdgrd basically intercepts the SYN/ACK sent by the bridge to the client and
 rewrites the TCP window size which is announced by the bridge. The window size
