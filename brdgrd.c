@@ -39,7 +39,7 @@
 /* the hash table and global config variables */
 static int verbose = 0;
 static int queue_number = 1;
-static int win_size = 80;
+static int win_size = 0;
 static char libnet_err_buf[LIBNET_ERRBUF_SIZE] = { 0 };
 
 
@@ -122,6 +122,11 @@ int rewrite_win_size( unsigned char *packet ) {
 	 * > itself is never scaled.
 	 */
 	VRB("Window size before rewriting: %u\n", ntohs(tcphdr->window));
+
+	/* randomize window size within [60,90] to prevent fingerprinting */
+	do {
+		win_size = 60 + (rand() % 31);
+	} while (win_size < 60 || win_size > 90);
 	tcphdr->window = htons(win_size);
 
 	if (!ln) {
@@ -280,6 +285,9 @@ int main( int argc, char **argv ) {
 
 	/* disable buffering for stdout */
 	setvbuf(stdout, NULL, _IONBF, 0);
+
+	/* does not have to be cryptographically secure */
+	srand(time(NULL));
 
 	/* parse cmdline options */
 	while (1) {
