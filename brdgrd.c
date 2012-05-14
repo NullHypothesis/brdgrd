@@ -74,7 +74,7 @@ static inline void print_time( void ) {
 		return;
 	}
 
-	strftime(timestr, sizeof(timestr), "%T", tmp);
+	strftime(timestr, sizeof(timestr), "%b %d, %T", tmp);
 
 	VRB("Time: %s.%03ld\n", timestr, tv.tv_usec/1000);
 }
