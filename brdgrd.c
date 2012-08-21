@@ -28,7 +28,7 @@
 #include <linux/netfilter.h>
 #include <libnetfilter_queue/libnetfilter_queue.h>
 
-/* used to print verbose messages to stdout */
+/* used to print fancy verbose messages to stdout */
 #define VRB(...) \
 	if (verbose) { \
 		printf("[V] "); \
@@ -36,13 +36,13 @@
 	}
 
 
-/* the hash table and global config variables */
+/* global config variables */
 static int verbose = 0;
 static int queue_number = 0;
 static uint16_t new_window = 0;
 
 
-/* Wrapped by the VRB() macros.
+/* Wrapped by the VRB() macro.
  */
 static void print( const char *fmt, ... ) {
 
@@ -85,7 +85,7 @@ static inline void print_time( void ) {
 static inline int tcp_synack_segment( struct iphdr *iphdr,
 	struct tcphdr *tcphdr ) {
 
-	/* check for IP protocol field */
+	/* check if the IP protocol is indeed TCP */
 	if (iphdr->protocol != 6) {
 		return 0;
 	}
@@ -106,9 +106,10 @@ static inline int tcp_synack_segment( struct iphdr *iphdr,
 /* This function tries to rewrite the TCP window size in the SYN/ACK which is
  * sent by the Tor bridge to the client. This is done without the bridge
  * knowing and hence a dirty hack. The purpose is to force the client to send a
- * small TCP segment after the handshake so that the cipher list inside the TLS
- * client hello gets fragmented across several segments (the GFC does not
- * conduct packet reassembly).
+ * small TCP segment immediately after the handshake so that the cipher list
+ * inside the TLS client hello [0] gets fragmented across several segments (the
+ * GFC does not seem to conduct packet reassembly at this point).
+ * [0] for Tor versions < 0.2.3.17-beta
  */
 int rewrite_win_size( unsigned char *packet ) {
 
@@ -130,6 +131,7 @@ int rewrite_win_size( unsigned char *packet ) {
 	} while (new_window < 60 || new_window > 90);
 	tcphdr->window = htons(new_window);
 
+	/* recalculate TCP checksum */
 	carry = (((uint32_t) new_check) + (old_window - new_window)) >> 16;
 	new_check += (old_window - new_window);
 	new_check += carry;
@@ -139,10 +141,9 @@ int rewrite_win_size( unsigned char *packet ) {
 }
 
 
-/* Callback function which is called for every incoming packet.
- * It issues a verdict for every packet which is either ACCEPT
- * or DROP.
- * This function deals with untrusted network data.
+/* Callback function which is called for every incoming packet. It issues a
+ * verdict for every packet which is either ACCEPT or DROP. We only issue
+ * ACCEPT verdicts (and try to rewrite the window size).
  */
 int callback( struct nfq_q_handle *qh, struct nfgenmsg *nfmsg, struct nfq_data *nfa,
 	void *data ) {
@@ -189,6 +190,7 @@ int callback( struct nfq_q_handle *qh, struct nfgenmsg *nfmsg, struct nfq_data *
 			return nfq_set_verdict(qh, id, NF_ACCEPT, 0, NULL);
 		}
 
+		/* send the modified packet back to the kernel */
 		VRB("Reinjecting SYN/ACK with window size set to %d.\n", new_window);
 		return nfq_set_verdict(qh, id, NF_ACCEPT, ntohs(iphdr->tot_len), packet);
 
