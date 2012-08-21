@@ -21,7 +21,7 @@
 #include <time.h>
 #include <sys/time.h>
 #include <stdlib.h>
-#include <libnet.h>
+#include <stdarg.h>
 #include <getopt.h>
 #include <netinet/ip.h>
 #include <netinet/tcp.h>
@@ -38,9 +38,8 @@
 
 /* the hash table and global config variables */
 static int verbose = 0;
-static int queue_number = 1;
-static int win_size = 0;
-static char libnet_err_buf[LIBNET_ERRBUF_SIZE] = { 0 };
+static int queue_number = 0;
+static uint16_t new_window = 0;
 
 
 /* Wrapped by the VRB() macros.
@@ -115,7 +114,9 @@ int rewrite_win_size( unsigned char *packet ) {
 
 	struct iphdr *iphdr = (struct iphdr *) packet;
 	struct tcphdr *tcphdr = (struct tcphdr *) (packet + (iphdr->ihl * 4));
-	static libnet_t *ln = NULL;
+	uint16_t old_window = ntohs(tcphdr->window);
+	uint16_t new_check = ntohs(tcphdr->check);
+	uint16_t carry = 0;
 
 	/* we can ignore window scaling because RFC1323 states:
 	 * > The Window field in a SYN (i.e., a <SYN> or <SYN,ACK>) segment
@@ -125,24 +126,14 @@ int rewrite_win_size( unsigned char *packet ) {
 
 	/* randomize window size within [60,90] to prevent fingerprinting */
 	do {
-		win_size = 60 + (rand() % 31);
-	} while (win_size < 60 || win_size > 90);
-	tcphdr->window = htons(win_size);
+		new_window = 60 + (rand() % 31);
+	} while (new_window < 60 || new_window > 90);
+	tcphdr->window = htons(new_window);
 
-	if (!ln) {
-		VRB("Initializing libnet for checksum calculation.\n");
-		/* initialize libnet for calculating the new checksum */
-		if ((ln = libnet_init(LIBNET_LINK, NULL, libnet_err_buf)) == NULL) {
-			fprintf(stderr, "Error: libnet_init() failed.\n");
-			return 1;
-		}
-	}
-
-	/* recalculate tcp checksum */
-	if (libnet_do_checksum(ln, packet, 6, ntohs(iphdr->tot_len) - (iphdr->ihl*4)) == -1) {
-		fprintf(stderr, "Error while recalculating TCP segment checksum.\n");
-		return 1;
-	}
+	carry = (((uint32_t) new_check) + (old_window - new_window)) >> 16;
+	new_check += (old_window - new_window);
+	new_check += carry;
+	tcphdr->check = htons(new_check);
 
 	return 0;
 }
@@ -198,7 +189,7 @@ int callback( struct nfq_q_handle *qh, struct nfgenmsg *nfmsg, struct nfq_data *
 			return nfq_set_verdict(qh, id, NF_ACCEPT, 0, NULL);
 		}
 
-		VRB("Reinjecting SYN/ACK with window size set to %d.\n", win_size);
+		VRB("Reinjecting SYN/ACK with window size set to %d.\n", new_window);
 		return nfq_set_verdict(qh, id, NF_ACCEPT, ntohs(iphdr->tot_len), packet);
 
 	/* something != SYN/ACK */
@@ -219,7 +210,6 @@ void help( const char *argv ) {
 	printf("Options:\n");
 	printf("\t-h, --help\t\tShow this help message and exit.\n");
 	printf("\t-v, --verbose\t\tEnable verbose mode and print much information.\n");
-	printf("\t-w, --winsize\t\tRewrite the bridge's announced TCP window size (default=%d).\n", win_size);
 	printf("\t-q, --queue=NUM\t\tThe NFQUEUE number to attach to (default=%d).\n", queue_number);
 }
 
@@ -278,13 +268,9 @@ int main( int argc, char **argv ) {
 	struct option long_options[] = {
 		{"verbose",		no_argument,		&verbose,	1},
 		{"help",		no_argument,		NULL,	'h'},
-		{"winsize",		required_argument,	NULL, 	'w'},
 		{"queue",		required_argument,	NULL,	'q'},
 		{0, 0, 0, 0}
 	};
-
-	/* disable buffering for stdout */
-	setvbuf(stdout, NULL, _IONBF, 0);
 
 	/* does not have to be cryptographically secure */
 	srand(time(NULL));
@@ -292,7 +278,7 @@ int main( int argc, char **argv ) {
 	/* parse cmdline options */
 	while (1) {
 
-		current_opt = getopt_long(argc, argv, "hvq:w:", long_options, &option_index);
+		current_opt = getopt_long(argc, argv, "hvq:", long_options, &option_index);
 
 		/* end of options? */
 		if (current_opt == -1) {
@@ -301,8 +287,6 @@ int main( int argc, char **argv ) {
 
 		switch (current_opt) {
 			case 'v': verbose = 1;
-				break;
-			case 'w': win_size = atoi(optarg);
 				break;
 			case 'q': queue_number = atoi(optarg);
 				break;
@@ -313,16 +297,13 @@ int main( int argc, char **argv ) {
 		}
 	}
 
-	/* dump configuration to stdout for the user to verify */
-	VRB("Configuration:\n\tnetfilter queue = %d\n\twindow size = %d\n", \
-		queue_number, win_size);
-
 	/* exit if initialization failed */
 	if (init_libnfq(&h, &qh) != 0) {
 		fprintf(stderr, "Exiting because libnetfilter_queue init failed.\n");
 		return 1;
 	}
 
+	/* get the file descriptor associated with the nfqueue handler */
 	fd = nfq_fd(h);
 
 	VRB("Waiting for incoming packets...\n");

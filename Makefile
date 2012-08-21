@@ -1,6 +1,6 @@
 CC      ?= gcc
 CFLAGS   = -Wall -Wextra -Wformat-security -O3 -fstack-protector-all
-LDFLAGS  = -lnetfilter_queue -lnet
+LDFLAGS  = -lnetfilter_queue
 PROGRAM  = brdgrd
 SOURCE   = brdgrd.c
 
