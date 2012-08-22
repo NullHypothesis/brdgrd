@@ -154,7 +154,9 @@ int callback( struct nfq_q_handle *qh, struct nfgenmsg *nfmsg, struct nfq_data *
 	unsigned char *packet= NULL;
 	int id = 0;
 
-	printf("\n");
+	if (verbose) {
+		printf("\n");
+	}
 	ph = nfq_get_msg_packet_hdr(nfa);
 	if (ph) {
 		id = ntohl(ph->packet_id);
