@@ -1,4 +1,4 @@
-/* Copyright (C) 2012 Philipp Winter (phw@torproject.org)
+/* Copyright (C) 2012, 2018 Philipp Winter (phw@torproject.org)
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -166,7 +166,7 @@ int callback( struct nfq_q_handle *qh, struct nfgenmsg *nfmsg, struct nfq_data *
 	}
 
 	/* try to get packet (header + payload) */
-	if (nfq_get_payload(nfa, (char **) &packet) == -1) {
+	if (nfq_get_payload(nfa, (unsigned char **) &packet) == -1) {
 		VRB("Error - the function nfq_get_payload() failed.\n");
 		return nfq_set_verdict(qh, id, NF_ACCEPT, 0, NULL);
 	}
