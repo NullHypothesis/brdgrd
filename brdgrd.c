@@ -28,6 +28,11 @@
 #include <linux/netfilter.h>
 #include <libnetfilter_queue/libnetfilter_queue.h>
 
+#if RAND_MAX < 0xffff
+/* As RAND_MAX is required to be not less than 0x7fff. */
+#error RAND_MAX is not large enough to generate ui16 for TCP Window value.
+#endif
+
 /* used to print fancy verbose messages to stdout */
 #define VRB(...) \
 	if (verbose) { \
@@ -41,7 +46,6 @@ static int verbose = 0;
 static int queue_number = 0;
 static int window_min = 60;
 static int window_max = 90;
-static int window_rnd_mask = 0;
 static uint16_t new_window = 0;
 
 
@@ -129,10 +133,8 @@ int rewrite_win_size( unsigned char *packet ) {
 	VRB("Window size before rewriting: %u\n", ntohs(tcphdr->window));
 
 	/* randomize window size within [min,max] to prevent fingerprinting */
-	if (window_rnd_mask) {
-		do {
-			new_window = window_min + (rand() % window_rnd_mask);
-		} while (new_window < window_min || new_window > window_max);
+	if (window_min < window_max) {
+		new_window = window_min + (rand() % (window_max - window_min + 1));
 	} else {
 		new_window = window_min;
 	}
@@ -323,18 +325,6 @@ int main( int argc, char **argv ) {
 	if (window_min > window_max) {
 		fprintf(stderr, "Minimum TCP window should be less or equal then maximum one.\n");
 		return 1;
-	}
-	window_rnd_mask = window_max - window_min;
-	if (window_rnd_mask) {
-		int shift = 0;
-		while (window_rnd_mask != 1) {
-			window_rnd_mask >>= 1;
-			shift += 1;
-		}
-		for (; shift; shift--) {
-			window_rnd_mask <<= 1;
-			window_rnd_mask |= 1;
-		}
 	}
 
 	/* exit if initialization failed */
