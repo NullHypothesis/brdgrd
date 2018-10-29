@@ -28,6 +28,11 @@
 #include <linux/netfilter.h>
 #include <libnetfilter_queue/libnetfilter_queue.h>
 
+#if RAND_MAX < 0xffff
+/* As RAND_MAX is required to be not less than 0x7fff. */
+#error RAND_MAX is not large enough to generate ui16 for TCP Window value.
+#endif
+
 /* used to print fancy verbose messages to stdout */
 #define VRB(...) \
 	if (verbose) { \
@@ -39,6 +44,8 @@
 /* global config variables */
 static int verbose = 0;
 static int queue_number = 0;
+static int window_min = 60;
+static int window_max = 90;
 static uint16_t new_window = 0;
 
 
@@ -125,10 +132,12 @@ int rewrite_win_size( unsigned char *packet ) {
 	 */
 	VRB("Window size before rewriting: %u\n", ntohs(tcphdr->window));
 
-	/* randomize window size within [60,90] to prevent fingerprinting */
-	do {
-		new_window = 60 + (rand() % 31);
-	} while (new_window < 60 || new_window > 90);
+	/* randomize window size within [min,max] to prevent fingerprinting */
+	if (window_min < window_max) {
+		new_window = window_min + (rand() % (window_max - window_min + 1));
+	} else {
+		new_window = window_min;
+	}
 	tcphdr->window = htons(new_window);
 
 	/* recalculate TCP checksum */
@@ -215,6 +224,8 @@ void help( const char *argv ) {
 	printf("\t-h, --help\t\tShow this help message and exit.\n");
 	printf("\t-v, --verbose\t\tEnable verbose mode and print much information.\n");
 	printf("\t-q, --queue=NUM\t\tThe NFQUEUE number to attach to (default=%d).\n", queue_number);
+	printf("\t-m, --min=NUM\t\tMinimum TCP Window (default=%d).\n", window_min);
+	printf("\t-M, --max=NUM\t\tMaximum TCP Window (default=%d).\n", window_max);
 }
 
 
@@ -273,6 +284,8 @@ int main( int argc, char **argv ) {
 		{"verbose",		no_argument,		&verbose,	1},
 		{"help",		no_argument,		NULL,	'h'},
 		{"queue",		required_argument,	NULL,	'q'},
+		{"min",			required_argument,	NULL,	'm'},
+		{"max",			required_argument,	NULL,	'M'},
 		{0, 0, 0, 0}
 	};
 
@@ -282,7 +295,7 @@ int main( int argc, char **argv ) {
 	/* parse cmdline options */
 	while (1) {
 
-		current_opt = getopt_long(argc, argv, "hvq:", long_options, &option_index);
+		current_opt = getopt_long(argc, argv, "hvq:m:M:", long_options, &option_index);
 
 		/* end of options? */
 		if (current_opt == -1) {
@@ -294,11 +307,24 @@ int main( int argc, char **argv ) {
 				break;
 			case 'q': queue_number = atoi(optarg);
 				break;
+			case 'm': window_min = atoi(optarg);
+				break;
+			case 'M': window_max = atoi(optarg);
+				break;
 			case 'h': help(argv[0]);
 				return 0;
 			case '?': help(argv[0]);
 				return 1;
 		}
+	}
+
+	if (window_min < 0 || window_max < 0 || window_min > 0xffff || window_max > 0xffff) {
+		fprintf(stderr, "TCP window is 16bit value.\n");
+		return 1;
+	}
+	if (window_min > window_max) {
+		fprintf(stderr, "Minimum TCP window should be less or equal then maximum one.\n");
+		return 1;
 	}
 
 	/* exit if initialization failed */
